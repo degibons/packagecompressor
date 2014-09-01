@@ -7,9 +7,6 @@
  * @author Michael Härtl <haertl.mike@gmail.com>
  * @version 1.0.4
  */
-
-Yii::setPathOfAlias('_packagecompressor', dirname(__FILE__));
-
 class PackageCompressor extends CClientScript
 {
     /**
@@ -30,11 +27,6 @@ class PackageCompressor extends CClientScript
      * @var bool wether other requests should pause during compression. On by default.
      */
     public $blockDuringCompression = true;
-
-    /**
-     * @var bool whether to add a fingerprint to CSS image urls.
-     */
-    public $enableCssImageFingerPrinting = false;
 
     /**
      * @var string name or path of/to the JAVA executable. Default is 'java'.
@@ -72,6 +64,8 @@ class PackageCompressor extends CClientScript
      */
     public function compressPackage($name)
     {
+        $package = $this->coreScripts[$name];
+
         // Backup registered scripts, css and core scripts, as we only want to
         // catch the files contained in the package, not those registered from elsewhere
         $coreScripts        = $this->coreScripts;
@@ -80,14 +74,14 @@ class PackageCompressor extends CClientScript
 
         $this->coreScripts = $this->cssFiles = $this->scriptFiles = array();
 
-        // Now we register only the package and let yii resolve dependencies
-        // and expand coreScripts into scriptFiles (usually happens during rendering)
-        $this->registerCoreScript($name);
+        $this->coreScripts[$name] = $package;
+        // Now we expand coreScripts into scriptFiles (usually happens during rendering)
         $this->renderCoreScripts();
 
         // Copied from CClientScript: process the scriptMap and remove duplicates
         if(!empty($this->scriptMap))
             $this->remapScripts();
+
         $this->unifyScripts();
 
         $info       = array();
@@ -114,16 +108,10 @@ class PackageCompressor extends CClientScript
                 $fileName = $this->compressFiles($name,'js',$scripts);
                 $urls[] = $am->publish($fileName,true);    // URL to compressed file
 
-                // Remove current package name from meta data
-                $core = array_keys($this->coreScripts);
-                if(($key = array_search($name,$core))!==false)
-                    unset($core[$key]);
-
                 $info['js'] = array(
                     'file'          => $am->getPublishedPath($fileName,true), // path to compressed file
                     'files'         => $scripts,
                     'urls'          => $urls,
-                    'coreScripts'   => $core,
                 );
                 unlink($fileName);
             }
@@ -138,6 +126,7 @@ class PackageCompressor extends CClientScript
                 $files[] = $basePath.$file;
 
             $fileName = $this->compressFiles($name,'css',$files);
+
             if(isset($this->packages[$name]['baseUrl']))
             {
                 // If a CSS package uses 'baseUrl' we do not use the asset publisher
@@ -164,7 +153,6 @@ class PackageCompressor extends CClientScript
             );
             unlink($fileName);
         }
-
         // Store package meta info
         if($info!==array())
             $this->setCompressedInfo($name,$info);
@@ -185,31 +173,49 @@ class PackageCompressor extends CClientScript
     {
         if ($this->enableCompression && !in_array($name,$this->_registeredPackages))
         {
-            $this->hasScripts = true;
-            $this->_registeredPackages[$name] = $name;
-
-            // Create compressed package if not done so yet
-            if(($info = $this->getCompressedInfo($name))===null)
+            if(isset($this->packages[$name]))
+                $package=$this->packages[$name];
+            else
             {
-                $mutex = $this->getMutex();
-
-                // Compresssion must only be performed once, even for several parallel requests
-                while(!$mutex->lock(self::LOCK_ID,self::LOCK_TIMEOUT))
-                    if($this->blockDuringCompression)
-                        sleep(1);
-                    else
-                        return parent::registerPackage($name);
-
-                // We have a Mutex lock, now check if another process already compressed this package
-                if ($this->getCompressedInfo($name,true)!==null) {
-                    $mutex->unlock();
-                    return $this;
+                if($this->corePackages===null)
+                    $this->corePackages=require(YII_PATH.'/web/js/packages.php');
+                if(isset($this->corePackages[$name]))
+                    $package=$this->corePackages[$name];
+            }
+            if(isset($package))
+            {
+                if(!empty($package['depends']))
+                {
+                    foreach($package['depends'] as $p)
+                        $this->registerPackage($p);
                 }
+                $this->coreScripts[$name]=$package;
+                $this->hasScripts = true;
+                $this->_registeredPackages[$name] = $name;
 
-                $this->compressPackage($name);
+                // Create compressed package if not done so yet
+                if(($info = $this->getCompressedInfo($name))===null)
+                {
+                    $mutex = $this->getMutex();
 
-                $mutex->unlock();
+                    // Compresssion must only be performed once, even for several parallel requests
+                    while(!$mutex->lock(self::LOCK_ID,self::LOCK_TIMEOUT))
+                        if($this->blockDuringCompression)
+                            sleep(1);
+                        else
+                            return parent::registerPackage($name);
 
+                    // We have a Mutex lock, now check if another process already compressed this package
+                    if ($this->getCompressedInfo($name,true)!==null) {
+                        $mutex->unlock();
+                        return $this;
+                    }
+
+                    $this->compressPackage($name);
+
+                    $mutex->unlock();
+
+                }
             }
             return $this;
         } else
@@ -227,6 +233,7 @@ class PackageCompressor extends CClientScript
             return;
 
         $packages = $this->_registeredPackages;
+
         if($this->enableCompression)
             foreach($packages as $package)
                 $this->unregisterPackagedCoreScripts($package);
@@ -249,7 +256,6 @@ class PackageCompressor extends CClientScript
             $this->renderBodyBegin($output);
             $this->renderBodyEnd($output);
         }
-
     }
 
     /**
@@ -294,7 +300,6 @@ class PackageCompressor extends CClientScript
      *          'file'          =>'/path/to/compressed/file',
      *          'files'         => <list of original file names>
      *          'urls'          => <list of script URLs (incl. external)>
-     *          'coreScripts'   => <list of core scripts contained in this package>
      *      ),
      *      'css'=>array(
      *          'file'          =>'/path/to/compressed/file',
@@ -350,7 +355,7 @@ class PackageCompressor extends CClientScript
     {
         if($this->_mutex===null)
             $this->_mutex = Yii::createComponent(array(
-                'class'     => '_packagecompressor.EMutex',
+                'class'     => 'ext.packagecompressor.EMutex',
                 'mutexFile' => Yii::app()->runtimePath.'/packagecompressor_mutex.bin',
             ));
 
@@ -368,30 +373,21 @@ class PackageCompressor extends CClientScript
     /**
      * Combine the set of given text files into one file
      *
-     * For js files, we add a semicolon to the end, in case the file forgot it, e.g. jquery.history.js in the yii repo.
-     *
      * @param string $name of package
-     * @param string $type of package, either js or css
-     * @param array  $files List of files to combine (full path)
+     * @param array $files list of files to combine (full path)
+     * @param bool $jsSafe wether to append a semicolon after every file
      * @return string full path name of combined file
      */
-    private function combineFiles($name,$type,$files)
+    private function combineFiles($name,$files,$jsSafe=false)
     {
         $fileName = tempnam(Yii::app()->runtimePath,'combined_'.$name);
-
-        foreach($files as $f) {
-            if($type == 'css' && $this->enableCssImageFingerPrinting)
-                $fileContents = $this->addCssImageFingerPrints($f);
-            else
-                $fileContents = file_get_contents($f);
-
-            if(!file_put_contents($fileName, $fileContents.($type==='js'?';':'')."\n", FILE_APPEND))
+        foreach($files as $f)
+            if(!file_put_contents($fileName, file_get_contents($f).($jsSafe ? ';':'')."\n", FILE_APPEND))
                 throw new CException(sprintf(
-                    'Could not combine file "%s" into "%s"',
+                    'Could not combine combine file "%s" into "%s"',
                     $f,
                     $fileName
                 ));
-        }
 
         return $fileName;
     }
@@ -413,17 +409,16 @@ class PackageCompressor extends CClientScript
             implode(",\n",$files)
         ),'application.components.packagecompressor');
 
-        $inFile = $this->combineFiles($name,$type,$files);
+        $inFile = $this->combineFiles($name,$files,$type==='js');
         $outFile = sprintf(
-            '%s/%s_pkg_%s_%s.%s',
+            '%s/%s_%s.%s',
             Yii::app()->runtimePath,
-            $type,
             $name,
-            md5_file($inFile),
+            substr(md5_file($inFile), 0, 16),
             $type
         );
 
-        $jar = Yii::getPathOfAlias('_packagecompressor.yuicompressor').DIRECTORY_SEPARATOR.self::YUI_COMPRESSOR_JAR;
+        $jar = Yii::getPathOfAlias('ext.packagecompressor.yuicompressor').DIRECTORY_SEPARATOR.self::YUI_COMPRESSOR_JAR;
         // See http://developer.yahoo.com/yui/compressor/
         $command = sprintf("%s -jar %s --type %s -o %s %s",escapeshellarg($this->javaBin),escapeshellarg($jar),$type,escapeshellarg($outFile),escapeshellarg($inFile));
 
@@ -476,62 +471,35 @@ class PackageCompressor extends CClientScript
 
             $this->scriptFiles[$p]=isset($this->scriptFiles[$p]) ?
                 array_merge($packageFiles,$this->scriptFiles[$p]) : $packageFiles;
-
-            YII_DEBUG && Yii::trace(
-                sprintf(
-                    "Render compressed js package '%s'\nContains:\n%s\nURLs:\n%s\nCoreScripts: %s",
-                    $name,
-                    implode(",\n",$package['js']['files']),
-                    implode(",\n",$package['js']['urls']),
-                    implode(", ",$package['js']['coreScripts'])
-                ),
-                'application.components.packagecompressor'
-            );
         }
 
         if(isset($package['css']))
         {
             $cssFiles = $this->cssFiles;
 
-            $urls = $this->cssFiles = array();
+            $this->cssFiles = array();
 
             foreach($package['css']['urls'] as $url)
                 $this->cssFiles[$url] = $package['css']['media'];
 
             foreach($cssFiles as $url => $media)
                 $this->cssFiles[$url] = $media;
-
-            YII_DEBUG && Yii::trace(
-                sprintf(
-                    "Render compressed css package '%s'\nContains:\n%s\nURLs:\n%s",
-                    $name,
-                    implode(",\n",$package['css']['files']),
-                    implode(",\n",$package['css']['urls'])
-                ),
-                'application.components.packagecompressor'
-            );
         }
     }
 
     /**
-     * Remove any registered core scripts and packages if we have it in the package to prevent publishing
+     * Remove any registered core script and packages if we have it in the package to prevent publishing
      *
      * @param string $name of package
      */
     private function unregisterPackagedCoreScripts($package)
     {
-        if (($info = $this->getCompressedInfo($package))===null || !isset($info['js']))
+        if (($info = $this->getCompressedInfo($package))===null)
             return;
 
         // Remove the package itself from the coreScripts or it would
         // still render the uncompressed script files
         unset($this->coreScripts[$package]);
-
-        // Also remove the coreScripts contained in the package
-        foreach($info['js']['coreScripts'] as $name) {
-            unset($this->coreScripts[$name]);
-            unset($this->_registeredPackages[$name]);
-        }
     }
 
     /**
@@ -561,55 +529,5 @@ class PackageCompressor extends CClientScript
             unset($this->_pd[$name]);
 
         $this->savePackageData();
-    }
-
-    /**
-     * Attempt to add a fingerprint to any image url found in the input file
-     *
-     * Example CSS that we want to match:
-     *   background: url('/images/stars/star.png') no-repeat 0px 0px;
-     *
-     * Resulting image file that we want to get a fingerprint for: /images/stars/star.png;
-     *
-     * Notes:
-     *  A) Cope with ' or " or no string encloser.
-     *  B) Only modify local assets, i.e. not apsolute urls.
-     *  C) Only modify jpg|jpeg|gif|png assets.
-     *  D) Don't modify assets that already have a fingerprint
-     *
-     * @param String $fileName Full file name of a CSS file
-     * @return string Modified CSS text
-     */
-    private function addCssImageFingerPrints($fileName)
-    {
-        $webRoot = realpath(Yii::getPathOfAlias('webroot'));
-
-        return preg_replace_callback(
-            '/url\([\'\"]?(.*?\.(jpg|jpeg|gif|png))[\'\"]?\)/',
-            function($matches) use ($fileName,$webRoot)
-            {
-                $imageURL = $matches[1];
-
-                if (preg_match('/^(https?:)?\/\//', $imageURL))
-                    return $matches[0]; // We don't fingerprint absolute urls
-
-                // image urls that start with a / are relative to the webroot, otherwise they are relative to the url of the CSS file.
-                $imageFile = ( $imageURL[0]==='/' ? $webRoot : dirname($fileName).'/' ) . $imageURL;
-
-                if (file_exists($imageFile))
-                    return 'url(\''.$imageURL.'?'.substr(md5_file($imageFile),0,8).'\')';
-
-                // We won't always find the image, e.g. there might be a mod_rewrite rule in play.
-                YII_DEBUG && Yii::trace(
-                    sprintf("Unable to find css image '%s' on disk. Css File: '%s'. CSS: %s.",
-                        $imageFile,
-                        $fileName,
-                        $matches[0]),
-                    'application.components.packagecompressor'
-                );
-                return $matches[0];
-            },
-            file_get_contents($fileName)
-        );
     }
 }
