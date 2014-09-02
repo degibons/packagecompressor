@@ -34,7 +34,7 @@ class PackageCompressor extends CClientScript
     /**
      * @var bool whether to add a fingerprint to CSS image urls.
      */
-    public $enableCssImageFingerPrinting = false;
+    public $enableCssImageFingerPrinting = true;
 
     /**
      * @var string name or path of/to the JAVA executable. Default is 'java'.
@@ -72,8 +72,6 @@ class PackageCompressor extends CClientScript
      */
     public function compressPackage($name)
     {
-        $package = $this->coreScripts[$name];
-
         // Backup registered scripts, css and core scripts, as we only want to
         // catch the files contained in the package, not those registered from elsewhere
         $coreScripts        = $this->coreScripts;
@@ -82,7 +80,7 @@ class PackageCompressor extends CClientScript
 
         $this->coreScripts = $this->cssFiles = $this->scriptFiles = array();
 
-        $this->coreScripts[$name] = $package;
+        $this->coreScripts[$name] = $this->packages[$name];
         // Now we expand coreScripts into scriptFiles (usually happens during rendering)
         $this->renderCoreScripts();
 
@@ -160,6 +158,13 @@ class PackageCompressor extends CClientScript
             unlink($fileName);
         }
 
+        // unlink published package original assets
+        if (isset($this->packages[$name]['basePath'])) {
+            $packagePath = Yii::getPathOfAlias($this->packages[$name]['basePath']);
+            $packageAssetsDir = Yii::app()->assetManager->getPublishedPath($packagePath);
+            $this->unlinkPublishedAssets($packageAssetsDir);
+        }
+
         // Store package meta info
         if($info!==array())
             $this->setCompressedInfo($name,$info);
@@ -181,22 +186,13 @@ class PackageCompressor extends CClientScript
         if ($this->enableCompression && !in_array($name,$this->_registeredPackages))
         {
             if(isset($this->packages[$name]))
+            {
                 $package=$this->packages[$name];
-            else
-            {
-                if($this->corePackages===null)
-                    $this->corePackages=require(YII_PATH.'/web/js/packages.php');
-                if(isset($this->corePackages[$name]))
-                    $package=$this->corePackages[$name];
-            }
-            if(isset($package))
-            {
                 if(!empty($package['depends']))
                 {
                     foreach($package['depends'] as $p)
                         $this->registerPackage($p);
                 }
-                $this->coreScripts[$name]=$package;
                 $this->hasScripts = true;
                 $this->_registeredPackages[$name] = $name;
 
@@ -227,6 +223,32 @@ class PackageCompressor extends CClientScript
             return $this;
         } else
             return parent::registerPackage($name);
+    }
+
+    /**
+     * Override CClientScript::getPackageBaseUrl() to avoid Yii::app()->getAssetManager call
+     * In order to console command "compress" works correct
+     * @param string $name
+     * @return bool|string
+     */
+    public function getPackageBaseUrl($name)
+    {
+        if(!isset($this->coreScripts[$name]))
+            return false;
+        $package=$this->coreScripts[$name];
+        if(isset($package['baseUrl']))
+        {
+            $baseUrl=$package['baseUrl'];
+            if($baseUrl==='' || $baseUrl[0]!=='/' && strpos($baseUrl,'://')===false)
+                $baseUrl=Yii::app()->getRequest()->getBaseUrl().'/'.$baseUrl;
+            $baseUrl=rtrim($baseUrl,'/');
+        }
+        elseif(isset($package['basePath']))
+            $baseUrl=Yii::app()->assetManager->publish(Yii::getPathOfAlias($package['basePath']));
+        else
+            $baseUrl=$this->getCoreScriptUrl();
+
+        return $this->coreScripts[$name]['baseUrl']=$baseUrl;
     }
 
     /**
@@ -595,5 +617,17 @@ class PackageCompressor extends CClientScript
             },
             file_get_contents($fileName)
         );
+    }
+
+    /**
+     * Unlink folder ($dirPath) recursively
+     * @param $dirPath
+     */
+    private function unlinkPublishedAssets($dirPath)
+    {
+        foreach(new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dirPath, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST) as $path) {
+            $path->isDir() ? rmdir($path->getPathname()) : unlink($path->getPathname());
+        }
+        rmdir($dirPath);
     }
 }
