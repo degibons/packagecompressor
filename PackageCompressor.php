@@ -18,16 +18,11 @@ class PackageCompressor extends CClientScript
     public $enableCompression = true;
 
     /**
-     * @var bool wether to only combine, not compress (useful for debugging)
-     */
-    public $combineOnly = false;
-
-    /**
      * If this is enabled, during compression all other requests will wait until the compressing
      * process has completed. If disabled, the uncompressed files will be delivered for these
      * requests. This should prevent the thundering herd problem.
      *
-     * @var bool wether other requests should pause during compression. On by default.
+     * @var bool whether other requests should pause during compression. On by default.
      */
     public $blockDuringCompression = true;
 
@@ -158,12 +153,9 @@ class PackageCompressor extends CClientScript
             unlink($fileName);
         }
 
-        // unlink published package original assets
-        if (isset($this->packages[$name]['basePath'])) {
-            $packagePath = Yii::getPathOfAlias($this->packages[$name]['basePath']);
-            $packageAssetsDir = Yii::app()->assetManager->getPublishedPath($packagePath);
-            $this->unlinkPublishedAssets($packageAssetsDir);
-        }
+        // delete published package original assets
+        if (isset($this->packages[$name]['basePath']))
+            $am->unPublish(Yii::getPathOfAlias($this->packages[$name]['basePath']));
 
         // Store package meta info
         if($info!==array())
@@ -228,6 +220,7 @@ class PackageCompressor extends CClientScript
     /**
      * Override CClientScript::getPackageBaseUrl() to avoid Yii::app()->getAssetManager call
      * In order to console command "compress" works correct
+     * Yii::app()->getAssetManager() is not available in console apps (should be Yii::app()->assetManager)
      * @param string $name
      * @return bool|string
      */
@@ -284,7 +277,6 @@ class PackageCompressor extends CClientScript
             $this->renderBodyBegin($output);
             $this->renderBodyEnd($output);
         }
-
     }
 
     /**
@@ -310,9 +302,15 @@ class PackageCompressor extends CClientScript
         foreach($packages as $package => $info)
         {
             if(isset($info['js']['file']))
-                @unlink($info['js']['file']);
-            if(isset($info['css']['file']))
-                @unlink($info['css']['file']);
+                $this->deleteDir(dirname($info['js']['file']));
+
+            if(isset($info['css']['file'])) {
+                if (isset($this->packages[$package]['basePath']))
+                    $this->deleteDir(dirname($info['css']['file']));
+                else
+                    @unlink($info['css']['file']);
+            }
+
             unset($this->_pd[$package]);
         }
 
@@ -456,14 +454,13 @@ class PackageCompressor extends CClientScript
             $type
         );
 
-        $jar = Yii::getPathOfAlias('_packagecompressor.yuicompressor').DIRECTORY_SEPARATOR.self::YUI_COMPRESSOR_JAR;
-        // See http://developer.yahoo.com/yui/compressor/
-        $command = sprintf("%s -jar %s --type %s -o %s %s",escapeshellarg($this->javaBin),escapeshellarg($jar),$type,escapeshellarg($outFile),escapeshellarg($inFile));
-
-        if($this->combineOnly)
+        if (isset($this->packages[$name]['compress']) && $this->packages[$name]['compress'] === false)
             copy($inFile,$outFile);
         else
         {
+            $jar = Yii::getPathOfAlias('_packagecompressor.yuicompressor').DIRECTORY_SEPARATOR.self::YUI_COMPRESSOR_JAR;
+            // See http://developer.yahoo.com/yui/compressor/
+            $command = sprintf("%s -jar %s --type %s -o %s %s",escapeshellarg($this->javaBin),escapeshellarg($jar),$type,escapeshellarg($outFile),escapeshellarg($inFile));
             exec($command,$output,$result);
 
             if ($result!==0)
@@ -620,14 +617,21 @@ class PackageCompressor extends CClientScript
     }
 
     /**
-     * Unlink folder ($dirPath) recursively
+     * Delete folder recursively
      * @param $dirPath
+     * @return bool
      */
-    private function unlinkPublishedAssets($dirPath)
+    private function deleteDir($dirPath)
     {
-        foreach(new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dirPath, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST) as $path) {
-            $path->isDir() ? rmdir($path->getPathname()) : unlink($path->getPathname());
+        try {
+            foreach(new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dirPath, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST) as $path) {
+                $path->isDir() ? @rmdir($path->getPathname()) : @unlink($path->getPathname());
+            }
+            @rmdir($dirPath);
+            return true;
         }
-        rmdir($dirPath);
+        catch (Exception $e) {
+            return false;
+        }
     }
 }
