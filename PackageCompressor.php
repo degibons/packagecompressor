@@ -64,9 +64,14 @@ class PackageCompressor extends CClientScript
      * be processed independently.
      *
      * @param string $name of package
+     * @return bool package compressed or not
      */
     public function compressPackage($name)
     {
+        // compress from Clientscript->packages only
+        if (!isset($this->packages[$name]))
+            return false;
+
         // Backup registered scripts, css and core scripts, as we only want to
         // catch the files contained in the package, not those registered from elsewhere
         $coreScripts        = $this->coreScripts;
@@ -97,8 +102,9 @@ class PackageCompressor extends CClientScript
         {
             $scripts    = array();
             $urls       = array();
+
             foreach($this->scriptFiles[$this->coreScriptPosition] as $script)
-                if (strtolower(substr($script,0,4))==='http' || substr($script,0,2)==='//') // Exclude external scripts
+                if (strtolower(substr($script,0,4))==='http' || substr($script,0,2)==='//') // external script
                     $urls[] = $script;
                 else
                     $scripts[] = $basePath.$script;   // '/www/root'.'/sub/js/some.js'
@@ -115,6 +121,11 @@ class PackageCompressor extends CClientScript
                 );
                 unlink($fileName);
             }
+            elseif ($urls!==array()) {
+                $info['js'] = array(
+                    'urls'          => $urls,
+                );
+            }
         }
 
         // Process all CSS files from the package (if any)
@@ -122,49 +133,67 @@ class PackageCompressor extends CClientScript
         {
             $files  = array();
             $urls   = array();
+
             foreach(array_keys($this->cssFiles) as $file)
-                $files[] = $basePath.$file;
+                if (strtolower(substr($file,0,4))==='http' || substr($file,0,2)==='//') // external file
+                    $urls[] = $file;
+                else
+                    $files[] = $basePath.$file;
 
-            $fileName = $this->compressFiles($name,'css',$files);
-            if(isset($this->packages[$name]['baseUrl']))
+            if ($files!==array())
             {
-                // If a CSS package uses 'baseUrl' we do not use the asset publisher
-                // because this could break CSS URLs. Instead we copy to baseUrl:
-                $url = '/'.trim($this->packages[$name]['baseUrl'],'/').'/'.basename($fileName);
+                $fileName = $this->compressFiles($name,'css',$files);
 
-                // '/www/root'.'/sub/'.'/css/some.css'
-                $destFile = $basePath.$baseUrl.$url;
+                if(isset($this->packages[$name]['baseUrl']))
+                {
+                    // If a CSS package uses 'baseUrl' we do not use the asset publisher
+                    // because this could break CSS URLs. Instead we copy to baseUrl:
+                    $url = '/'.trim($this->packages[$name]['baseUrl'],'/').'/'.basename($fileName);
 
-                copy($fileName, $destFile);
-                $urls[] = $baseUrl.$url;  // '/sub'.'/css/some.css'
+                    // '/www/root'.'/sub/'.'/css/some.css'
+                    $destFile = $basePath.$baseUrl.$url;
+
+                    copy($fileName, $destFile);
+                    $urls[] = $baseUrl.$url;  // '/sub'.'/css/some.css'
+                }
+                else
+                {
+                    $urls[] = $am->publish($fileName,true);    // URL to compressed file
+                    $destFile = $am->getPublishedPath($fileName,true);
+                }
+
+                $info['css'] = array(
+                    'file'  => $destFile,
+                    'files' => $files,
+                    'urls'  => $urls,
+                    'media' => isset($this->packages[$name]['media']) ? $this->packages[$name]['media'] : '',
+                );
+                unlink($fileName);
             }
-            else
-            {
-                $urls[] = $am->publish($fileName,true);    // URL to compressed file
-                $destFile = $am->getPublishedPath($fileName,true);
+            elseif ($urls!==array()) {
+                $info['css'] = array(
+                    'urls'  => $urls,
+                    'media' => isset($this->packages[$name]['media']) ? $this->packages[$name]['media'] : '',
+                );
             }
-
-            $info['css'] = array(
-                'file'  => $destFile,
-                'files' => $files,
-                'urls'  => $urls,
-                'media' => isset($this->packages[$name]['media']) ? $this->packages[$name]['media'] : '',
-            );
-            unlink($fileName);
         }
 
         // delete published package original assets
         if (isset($this->packages[$name]['basePath']))
             $am->unPublish(Yii::getPathOfAlias($this->packages[$name]['basePath']));
 
-        // Store package meta info
-        if($info!==array())
-            $this->setCompressedInfo($name,$info);
-
         // Restore original coreScripts, scriptFiles and cssFiles
         $this->coreScripts  = $coreScripts;
         $this->scriptFiles  = $scriptFiles;
         $this->cssFiles     = $cssFiles;
+
+        // Store package meta info
+        if($info!==array()) {
+            $this->setCompressedInfo($name,$info);
+            return true;
+        }
+        else
+            return false;
     }
 
     /**
@@ -175,7 +204,7 @@ class PackageCompressor extends CClientScript
      */
     public function registerPackage($name)
     {
-        if ($this->enableCompression && !in_array($name,$this->_registeredPackages))
+        if ($this->enableCompression && !in_array($name, $this->_registeredPackages))
         {
             if(isset($this->packages[$name]))
             {
@@ -337,7 +366,7 @@ class PackageCompressor extends CClientScript
      * @param bool wether to enforce that package data is read again from global state
      * @return mixed array with compressed package information or null if none
      */
-    public function getCompressedInfo($name,$forceRefresh=false)
+    public function getCompressedInfo($name, $forceRefresh=false)
     {
         if ($this->_pd===null || $forceRefresh)
             $this->loadPackageData($forceRefresh);
@@ -502,10 +531,10 @@ class PackageCompressor extends CClientScript
             $p = $this->coreScriptPosition;
 
             // Keys in scriptFiles must be equal to value to make unifyScripts work:
-            $packageFiles = array_combine($package['js']['urls'],$package['js']['urls']);
+            $packageFiles = array_combine($package['js']['urls'], $package['js']['urls']);
 
-            $this->scriptFiles[$p]=isset($this->scriptFiles[$p]) ?
-                array_merge($packageFiles,$this->scriptFiles[$p]) : $packageFiles;
+            $this->scriptFiles[$p] = isset($this->scriptFiles[$p]) ?
+                array_merge($packageFiles, $this->scriptFiles[$p]) : $packageFiles;
         }
 
         if(isset($package['css']))
