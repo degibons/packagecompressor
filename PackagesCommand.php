@@ -81,12 +81,17 @@ EOD;
     {
         $clientScript=Yii::app()->clientScript;
 
-        if ($name === null) {
-            foreach ($clientScript->packages as $name => $package)
-                $clientScript->compressPackage($name);
-        } else {
-            $clientScript->compressPackage($name);
+        if ($name === null)
+            $packages = array_keys($clientScript->packages);
+        else
+            $packages = array($name);
+
+        echo "Compressing...\n";
+        foreach ($packages as $package) {
+            if (!$clientScript->compressPackage($package))
+                echo "Can't compress package '$package'\n";
         }
+        echo "Done.\n";
     }
 
     /**
@@ -101,8 +106,20 @@ EOD;
         if($name===null)
         {
             echo "-------------------------------------------------------\n";
-            $names = $clientScript->getCompressedPackageNames();
-            echo "Compressed packages found: ".implode(' ',$names)."\n";
+            if (($names = $clientScript->getCompressedPackageNames()) !== array())
+            {
+                echo "Compressed packages found:\n";
+                echo "-------------------------------------------------------\n";
+                echo implode(" \n",$names)."\n";
+                echo "-------------------------------------------------------\n";
+                echo "Total packages compressed: ".count($names)."\n";
+                echo "Total clientScript packages: ".count($clientScript->packages)."\n\n";
+            }
+            else
+            {
+                echo "Compressed packages not found\n";
+                exit;
+            }
         }
         else
             $names=array($name);
@@ -117,9 +134,11 @@ EOD;
                 exit;
             }
 
+            if(isset($info['js'])) {
+                echo "Package '".$name."' contains Javascript.\n\n";
+            }
 
             if(isset($info['js']['file'])) {
-                echo "Package '".$name."' contains Javascript.\n\n";
                 echo "  The compressed file is:\n\n    ".$info['js']['file']."\n";
             }
 
@@ -142,8 +161,11 @@ EOD;
                     implode(' ',$info['js']['coreScripts'])."\n";
 
 
-            if(isset($info['css']['file'])) {
+            if(isset($info['css'])) {
                 echo "\nPackage '".$name."' contains CSS.\n\n";
+            }
+
+            if(isset($info['css']['file'])) {
                 echo "  The compressed file is:\n\n    ".$info['css']['file']."\n";
             }
 
